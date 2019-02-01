@@ -1,4 +1,4 @@
-package(licenses = ["notice"])  # Apache 2.0
+package(licenses = ["notice"])
 
 load("//tools/go_stateify:defs.bzl", "go_library", "go_test")
 
@@ -42,7 +42,6 @@ go_test(
     deps = [
         "//pkg/sentry/context",
         "//pkg/sentry/fs",
-        "//pkg/sentry/kernel",
         "//pkg/sentry/kernel/contexttest",
         "//pkg/sentry/usage",
         "//pkg/sentry/usermem",

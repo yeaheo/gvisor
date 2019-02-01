@@ -1,6 +1,6 @@
 package(
     default_visibility = ["//:sandbox"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 cc_library(
@@ -15,6 +15,17 @@ cc_library(
         ":save_util",
         ":test_util",
         "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
+    name = "eventfd_util",
+    testonly = 1,
+    hdrs = ["eventfd_util.h"],
+    deps = [
+        ":file_descriptor",
+        ":posix_error",
+        ":save_util",
     ],
 )
 

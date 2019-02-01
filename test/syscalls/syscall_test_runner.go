@@ -41,12 +41,14 @@ import (
 const testDir = "test/syscalls/linux"
 
 var (
-	testName  = flag.String("test-name", "", "name of test binary to run")
-	debug     = flag.Bool("debug", false, "enable debug logs")
-	strace    = flag.Bool("strace", false, "enable strace logs")
-	platform  = flag.String("platform", "ptrace", "platform to run on")
-	parallel  = flag.Bool("parallel", false, "run tests in parallel")
-	runscPath = flag.String("runsc", "", "path to runsc binary")
+	testName   = flag.String("test-name", "", "name of test binary to run")
+	debug      = flag.Bool("debug", false, "enable debug logs")
+	strace     = flag.Bool("strace", false, "enable strace logs")
+	platform   = flag.String("platform", "ptrace", "platform to run on")
+	useTmpfs   = flag.Bool("use-tmpfs", false, "mounts tmpfs for /tmp")
+	fileAccess = flag.String("file-access", "exclusive", "mounts root in exclusive or shared mode")
+	parallel   = flag.Bool("parallel", false, "run tests in parallel")
+	runscPath  = flag.String("runsc", "", "path to runsc binary")
 )
 
 // runTestCaseNative runs the test case directly on the host machine.
@@ -109,10 +111,14 @@ func runTestCaseRunsc(testBin string, tc gtest.TestCase, t *testing.T) {
 	// write to the rootfs, and expect EACCES, not EROFS.
 	spec.Root.Readonly = false
 
-	// Forces '/tmp' to be mounted as tmpfs, otherwise test that rely on features
-	// available in gVisor's tmpfs and not gofers, may fail.
-	spec.Mounts = []specs.Mount{
-		{Destination: "/tmp", Type: "tmpfs"},
+	// Test spec comes with pre-defined mounts that we don't want. Reset it.
+	spec.Mounts = nil
+	if *useTmpfs {
+		// Forces '/tmp' to be mounted as tmpfs, otherwise test that rely on
+		// features available in gVisor's tmpfs and not gofers, may fail.
+		spec.Mounts = []specs.Mount{
+			{Destination: "/tmp", Type: "tmpfs"},
+		}
 	}
 
 	// Set environment variable that indicates we are
@@ -153,6 +159,7 @@ func runTestCaseRunsc(testBin string, tc gtest.TestCase, t *testing.T) {
 	args := []string{
 		"-platform", *platform,
 		"-root", rootDir,
+		"-file-access", *fileAccess,
 		"--network=none",
 		"-log-format=text",
 		"-TESTONLY-unsafe-nonroot=true",
@@ -163,6 +170,10 @@ func runTestCaseRunsc(testBin string, tc gtest.TestCase, t *testing.T) {
 	if *strace {
 		args = append(args, "-strace")
 	}
+	if outDir, ok := syscall.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); ok {
+		args = append(args, "-debug-log", outDir+"/")
+	}
+
 	// Current process doesn't have CAP_SYS_ADMIN, create user namespace and run
 	// as root inside that namespace to get it.
 	args = append(args, "run", "--bundle", bundleDir, id)

@@ -24,10 +24,6 @@ import (
 	"gvisor.googlesource.com/gvisor/runsc/specutils"
 )
 
-// chrootBinPath is the location inside the chroot where the runsc binary will
-// be mounted.
-const chrootBinPath = "/runsc"
-
 // mountInChroot creates the destination mount point in the given chroot and
 // mounts the source.
 func mountInChroot(chroot, src, dst, typ string, flags uint32) error {
@@ -36,6 +32,29 @@ func mountInChroot(chroot, src, dst, typ string, flags uint32) error {
 
 	if err := specutils.Mount(src, chrootDst, typ, flags); err != nil {
 		return fmt.Errorf("error mounting %q at %q: %v", src, chrootDst, err)
+	}
+	return nil
+}
+
+func pivotRoot(root string) error {
+	if err := os.Chdir(root); err != nil {
+		return fmt.Errorf("error changing working directory: %v", err)
+	}
+	// pivot_root(new_root, put_old) moves the root filesystem (old_root)
+	// of the calling process to the directory put_old and makes new_root
+	// the new root filesystem of the calling process.
+	//
+	// pivot_root(".", ".") makes a mount of the working directory the new
+	// root filesystem, so it will be moved in "/" and then the old_root
+	// will be moved to "/" too. The parent mount of the old_root will be
+	// new_root, so after umounting the old_root, we will see only
+	// the new_root in "/".
+	if err := syscall.PivotRoot(".", "."); err != nil {
+		return fmt.Errorf("error changing root filesystem: %v", err)
+	}
+
+	if err := syscall.Unmount(".", syscall.MNT_DETACH); err != nil {
+		return fmt.Errorf("error umounting the old root file system: %v", err)
 	}
 	return nil
 }
@@ -70,33 +89,9 @@ func setUpChroot(pidns bool) error {
 		}
 	}
 
-	if err := mountInChroot(chroot, specutils.ExePath, chrootBinPath, "bind", syscall.MS_BIND|syscall.MS_RDONLY); err != nil {
-		return fmt.Errorf("error mounting runsc in chroot: %v", err)
-	}
-
-	if err := os.Chdir(chroot); err != nil {
-		return fmt.Errorf("error changing working directory: %v", err)
-	}
-
 	if err := syscall.Mount("", chroot, "", syscall.MS_REMOUNT|syscall.MS_RDONLY|syscall.MS_BIND, ""); err != nil {
 		return fmt.Errorf("error remounting chroot in read-only: %v", err)
 	}
-	// pivot_root(new_root, put_old) moves the root filesystem (old_root)
-	// of the calling process to the directory put_old and makes new_root
-	// the new root filesystem of the calling process.
-	//
-	// pivot_root(".", ".") makes a mount of the working directory the new
-	// root filesystem, so it will be moved in "/" and then the old_root
-	// will be moved to "/" too. The parent mount of the old_root will be
-	// new_root, so after umounting the old_root, we will see only
-	// the new_root in "/".
-	if err := syscall.PivotRoot(".", "."); err != nil {
-		return fmt.Errorf("error changing root filesystem: %v", err)
-	}
 
-	if err := syscall.Unmount(".", syscall.MNT_DETACH); err != nil {
-		return fmt.Errorf("error umounting the old root file system: %v", err)
-	}
-
-	return nil
+	return pivotRoot(chroot)
 }

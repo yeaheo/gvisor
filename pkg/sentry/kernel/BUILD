@@ -1,6 +1,6 @@
 load("@io_bazel_rules_go//proto:def.bzl", "go_proto_library")
 
-package(licenses = ["notice"])  # Apache 2.0
+package(licenses = ["notice"])
 
 load("//tools/go_generics:defs.bzl", "go_template_instance")
 load("//tools/go_stateify:defs.bzl", "go_library", "go_test")
@@ -34,7 +34,7 @@ go_template_instance(
     out = "seqatomic_taskgoroutineschedinfo.go",
     package = "kernel",
     suffix = "TaskGoroutineSchedInfo",
-    template = "//pkg/sync:generic_seqatomic",
+    template = "//third_party/gvsync:generic_seqatomic",
     types = {
         "Value": "TaskGoroutineSchedInfo",
     },
@@ -183,12 +183,12 @@ go_library(
         "//pkg/sentry/usermem",
         "//pkg/state",
         "//pkg/state/statefile",
-        "//pkg/sync",
         "//pkg/syserr",
         "//pkg/syserror",
         "//pkg/tcpip",
         "//pkg/tcpip/stack",
         "//pkg/waiter",
+        "//third_party/gvsync",
     ],
 )
 

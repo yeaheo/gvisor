@@ -1,6 +1,6 @@
 load("//tools/go_stateify:defs.bzl", "go_library", "go_test")
 
-package(licenses = ["notice"])  # Apache 2.0
+package(licenses = ["notice"])
 
 go_library(
     name = "fdbased",
@@ -27,6 +27,7 @@ go_test(
         "//pkg/tcpip",
         "//pkg/tcpip/buffer",
         "//pkg/tcpip/header",
+        "//pkg/tcpip/link/rawfile",
         "//pkg/tcpip/stack",
     ],
 )

@@ -1,4 +1,4 @@
-package(licenses = ["notice"])  # Apache 2.0
+package(licenses = ["notice"])
 
 load("//tools/go_generics:defs.bzl", "go_template_instance")
 load("//tools/go_stateify:defs.bzl", "go_library", "go_test")
@@ -70,6 +70,7 @@ go_library(
         "host_file_mapper.go",
         "host_file_mapper_state.go",
         "host_file_mapper_unsafe.go",
+        "host_mappable.go",
         "inode.go",
         "inode_cached.go",
     ],

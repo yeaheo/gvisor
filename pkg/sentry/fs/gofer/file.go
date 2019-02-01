@@ -204,7 +204,7 @@ func (f *fileOperations) Write(ctx context.Context, file *fs.File, src usermem.I
 		return 0, syserror.EISDIR
 	}
 	cp := f.inodeOperations.session().cachePolicy
-	if cp.usePageCache(file.Dirent.Inode) {
+	if cp.useCachingInodeOps(file.Dirent.Inode) {
 		n, err := f.inodeOperations.cachingInodeOps.Write(ctx, src, offset)
 		if err != nil {
 			return n, err
@@ -214,6 +214,9 @@ func (f *fileOperations) Write(ctx context.Context, file *fs.File, src usermem.I
 			err = f.inodeOperations.cachingInodeOps.WriteOut(ctx, file.Dirent.Inode)
 		}
 		return n, err
+	}
+	if f.inodeOperations.fileState.hostMappable != nil {
+		return f.inodeOperations.fileState.hostMappable.Write(ctx, src, offset)
 	}
 	return src.CopyInTo(ctx, f.handles.readWriterAt(ctx, offset))
 }
@@ -225,7 +228,7 @@ func (f *fileOperations) Read(ctx context.Context, file *fs.File, dst usermem.IO
 		return 0, syserror.EISDIR
 	}
 
-	if f.inodeOperations.session().cachePolicy.usePageCache(file.Dirent.Inode) {
+	if f.inodeOperations.session().cachePolicy.useCachingInodeOps(file.Dirent.Inode) {
 		return f.inodeOperations.cachingInodeOps.Read(ctx, file, dst, offset)
 	}
 	return dst.CopyOutFrom(ctx, f.handles.readWriterAt(ctx, offset))
@@ -267,10 +270,7 @@ func (f *fileOperations) Flush(ctx context.Context, file *fs.File) error {
 
 // ConfigureMMap implements fs.FileOperations.ConfigureMMap.
 func (f *fileOperations) ConfigureMMap(ctx context.Context, file *fs.File, opts *memmap.MMapOpts) error {
-	if !f.inodeOperations.session().cachePolicy.usePageCache(file.Dirent.Inode) {
-		return syserror.ENODEV
-	}
-	return fsutil.GenericConfigureMMap(file, f.inodeOperations.cachingInodeOps, opts)
+	return f.inodeOperations.configureMMap(file, opts)
 }
 
 // Seek implements fs.FileOperations.Seek.

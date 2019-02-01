@@ -12,5 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package sync provides synchronization primitives.
-package sync
+#include "textflag.h"
+
+TEXT ·Rdtsc(SB),NOSPLIT,$0-8
+	// Get the virtual counter.
+	ISB	$15
+	WORD	$0xd53be040     //MRS	CNTVCT_EL0, R0
+	MOVD	R0, ret+0(FP)
+	RET
