@@ -83,7 +83,7 @@ func runTestCaseNative(testBin string, tc gtest.TestCase, t *testing.T) {
 
 	// Remove shard env variables so that the gunit binary does not try to
 	// intepret them.
-	env = filterEnv(env, []string{"TEST_SHARD_INDEX", "TEST_TOTAL_SHARDS"})
+	env = filterEnv(env, []string{"TEST_SHARD_INDEX", "TEST_TOTAL_SHARDS", "GTEST_SHARD_INDEX", "GTEST_TOTAL_SHARDS"})
 
 	cmd := exec.Command(testBin, gtest.FilterTestFlag+"="+tc.FullName())
 	cmd.Env = env
@@ -133,7 +133,7 @@ func runTestCaseRunsc(testBin string, tc gtest.TestCase, t *testing.T) {
 
 	// Remove shard env variables so that the gunit binary does not try to
 	// intepret them.
-	env = filterEnv(env, []string{"TEST_SHARD_INDEX", "TEST_TOTAL_SHARDS"})
+	env = filterEnv(env, []string{"TEST_SHARD_INDEX", "TEST_TOTAL_SHARDS", "GTEST_SHARD_INDEX", "GTEST_TOTAL_SHARDS"})
 
 	// Set TEST_TMPDIR to /tmp, as some of the syscall tests require it to
 	// be backed by tmpfs.
@@ -171,7 +171,13 @@ func runTestCaseRunsc(testBin string, tc gtest.TestCase, t *testing.T) {
 		args = append(args, "-strace")
 	}
 	if outDir, ok := syscall.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); ok {
-		args = append(args, "-debug-log", outDir+"/")
+		debugLogDir, err := ioutil.TempDir(outDir, "runsc")
+		if err != nil {
+			t.Fatalf("could not create temp dir: %v", err)
+		}
+		debugLogDir += "/"
+		log.Infof("runsc logs: %s", debugLogDir)
+		args = append(args, "-debug-log", debugLogDir)
 	}
 
 	// Current process doesn't have CAP_SYS_ADMIN, create user namespace and run
