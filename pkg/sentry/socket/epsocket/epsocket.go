@@ -27,7 +27,6 @@ package epsocket
 import (
 	"bytes"
 	"math"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -150,11 +149,26 @@ type SocketOperations struct {
 	Endpoint tcpip.Endpoint
 	skType   transport.SockType
 
-	// readMu protects access to readView, control, and sender.
-	readMu   sync.Mutex `state:"nosave"`
+	// readMu protects access to the below fields.
+	readMu sync.Mutex `state:"nosave"`
+	// readView contains the remaining payload from the last packet.
 	readView buffer.View
-	readCM   tcpip.ControlMessages
-	sender   tcpip.FullAddress
+	// readCM holds control message information for the last packet read
+	// from Endpoint.
+	readCM tcpip.ControlMessages
+	sender tcpip.FullAddress
+
+	// sockOptTimestamp corresponds to SO_TIMESTAMP. When true, timestamps
+	// of returned messages can be returned via control messages. When
+	// false, the same timestamp is instead stored and can be read via the
+	// SIOCGSTAMP ioctl. It is protected by readMu. See socket(7).
+	sockOptTimestamp bool
+	// timestampValid indicates whether timestamp for SIOCGSTAMP has been
+	// set. It is protected by readMu.
+	timestampValid bool
+	// timestampNS holds the timestamp to use with SIOCTSTAMP. It is only
+	// valid when timestampValid is true. It is protected by readMu.
+	timestampNS int64
 }
 
 // New creates a new endpoint socket.
@@ -177,6 +191,15 @@ func New(t *kernel.Task, family int, skType transport.SockType, queue *waiter.Qu
 
 var sockAddrInetSize = int(binary.Size(linux.SockAddrInet{}))
 var sockAddrInet6Size = int(binary.Size(linux.SockAddrInet6{}))
+
+// bytesToIPAddress converts an IPv4 or IPv6 address from the user to the
+// netstack representation taking any addresses into account.
+func bytesToIPAddress(addr []byte) tcpip.Address {
+	if bytes.Equal(addr, make([]byte, 4)) || bytes.Equal(addr, make([]byte, 16)) {
+		return ""
+	}
+	return tcpip.Address(addr)
+}
 
 // GetAddress reads an sockaddr struct from the given address and converts it
 // to the FullAddress format. It supports AF_UNIX, AF_INET and AF_INET6
@@ -218,11 +241,8 @@ func GetAddress(sfamily int, addr []byte) (tcpip.FullAddress, *syserr.Error) {
 		binary.Unmarshal(addr[:sockAddrInetSize], usermem.ByteOrder, &a)
 
 		out := tcpip.FullAddress{
-			Addr: tcpip.Address(a.Addr[:]),
+			Addr: bytesToIPAddress(a.Addr[:]),
 			Port: ntohs(a.Port),
-		}
-		if out.Addr == "\x00\x00\x00\x00" {
-			out.Addr = ""
 		}
 		return out, nil
 
@@ -234,14 +254,11 @@ func GetAddress(sfamily int, addr []byte) (tcpip.FullAddress, *syserr.Error) {
 		binary.Unmarshal(addr[:sockAddrInet6Size], usermem.ByteOrder, &a)
 
 		out := tcpip.FullAddress{
-			Addr: tcpip.Address(a.Addr[:]),
+			Addr: bytesToIPAddress(a.Addr[:]),
 			Port: ntohs(a.Port),
 		}
 		if isLinkLocal(out.Addr) {
 			out.NIC = tcpip.NICID(a.Scope_id)
-		}
-		if out.Addr == tcpip.Address(strings.Repeat("\x00", 16)) {
-			out.Addr = ""
 		}
 		return out, nil
 
@@ -251,7 +268,7 @@ func GetAddress(sfamily int, addr []byte) (tcpip.FullAddress, *syserr.Error) {
 }
 
 func (s *SocketOperations) isPacketBased() bool {
-	return s.skType == linux.SOCK_DGRAM || s.skType == linux.SOCK_SEQPACKET || s.skType == linux.SOCK_RDM
+	return s.skType == linux.SOCK_DGRAM || s.skType == linux.SOCK_SEQPACKET || s.skType == linux.SOCK_RDM || s.skType == linux.SOCK_RAW
 }
 
 // fetchReadView updates the readView field of the socket if it's currently
@@ -515,6 +532,24 @@ func (s *SocketOperations) Shutdown(t *kernel.Task, how int) *syserr.Error {
 // GetSockOpt implements the linux syscall getsockopt(2) for sockets backed by
 // tcpip.Endpoint.
 func (s *SocketOperations) GetSockOpt(t *kernel.Task, level, name, outLen int) (interface{}, *syserr.Error) {
+	// TODO: Unlike other socket options, SO_TIMESTAMP is
+	// implemented specifically for epsocket.SocketOperations rather than
+	// commonEndpoint. commonEndpoint should be extended to support socket
+	// options where the implementation is not shared, as unix sockets need
+	// their own support for SO_TIMESTAMP.
+	if level == linux.SOL_SOCKET && name == linux.SO_TIMESTAMP {
+		if outLen < sizeOfInt32 {
+			return nil, syserr.ErrInvalidArgument
+		}
+		val := int32(0)
+		s.readMu.Lock()
+		defer s.readMu.Unlock()
+		if s.sockOptTimestamp {
+			val = 1
+		}
+		return val, nil
+	}
+
 	return GetSockOpt(t, s, s.Endpoint, s.family, s.skType, level, name, outLen)
 }
 
@@ -547,6 +582,7 @@ func GetSockOpt(t *kernel.Task, s socket.Socket, ep commonEndpoint, family int, 
 
 // getSockOptSocket implements GetSockOpt when level is SOL_SOCKET.
 func getSockOptSocket(t *kernel.Task, s socket.Socket, ep commonEndpoint, family int, skType transport.SockType, name, outLen int) (interface{}, *syserr.Error) {
+	// TODO: Stop rejecting short optLen values in getsockopt.
 	switch name {
 	case linux.SO_TYPE:
 		if outLen < sizeOfInt32 {
@@ -646,6 +682,18 @@ func getSockOptSocket(t *kernel.Task, s socket.Socket, ep commonEndpoint, family
 
 		return int32(v), nil
 
+	case linux.SO_BROADCAST:
+		if outLen < sizeOfInt32 {
+			return nil, syserr.ErrInvalidArgument
+		}
+
+		var v tcpip.BroadcastOption
+		if err := ep.GetSockOpt(&v); err != nil {
+			return nil, syserr.TranslateNetstackError(err)
+		}
+
+		return int32(v), nil
+
 	case linux.SO_KEEPALIVE:
 		if outLen < sizeOfInt32 {
 			return nil, syserr.ErrInvalidArgument
@@ -679,18 +727,6 @@ func getSockOptSocket(t *kernel.Task, s socket.Socket, ep commonEndpoint, family
 		}
 
 		return linux.NsecToTimeval(s.RecvTimeout()), nil
-
-	case linux.SO_TIMESTAMP:
-		if outLen < sizeOfInt32 {
-			return nil, syserr.ErrInvalidArgument
-		}
-
-		var v tcpip.TimestampOption
-		if err := ep.GetSockOpt(&v); err != nil {
-			return nil, syserr.TranslateNetstackError(err)
-		}
-
-		return int32(v), nil
 
 	case linux.SO_OOBINLINE:
 		if outLen < sizeOfInt32 {
@@ -845,6 +881,30 @@ func getSockOptIP(t *kernel.Task, ep commonEndpoint, name, outLen int) (interfac
 
 		return int32(v), nil
 
+	case linux.IP_MULTICAST_IF:
+		if outLen < inetMulticastRequestSize {
+			return nil, syserr.ErrInvalidArgument
+		}
+
+		var v tcpip.MulticastInterfaceOption
+		if err := ep.GetSockOpt(&v); err != nil {
+			return nil, syserr.TranslateNetstackError(err)
+		}
+
+		a, _ := ConvertAddress(linux.AF_INET, tcpip.FullAddress{Addr: v.InterfaceAddr})
+
+		rv := linux.InetMulticastRequestWithNIC{
+			linux.InetMulticastRequest{
+				InterfaceAddr: a.(linux.SockAddrInet).Addr,
+			},
+			int32(v.NIC),
+		}
+
+		if outLen >= inetMulticastRequestWithNICSize {
+			return rv, nil
+		}
+		return rv.InetMulticastRequest, nil
+
 	default:
 		emitUnimplementedEventIP(t, name)
 	}
@@ -854,6 +914,21 @@ func getSockOptIP(t *kernel.Task, ep commonEndpoint, name, outLen int) (interfac
 // SetSockOpt implements the linux syscall setsockopt(2) for sockets backed by
 // tcpip.Endpoint.
 func (s *SocketOperations) SetSockOpt(t *kernel.Task, level int, name int, optVal []byte) *syserr.Error {
+	// TODO: Unlike other socket options, SO_TIMESTAMP is
+	// implemented specifically for epsocket.SocketOperations rather than
+	// commonEndpoint. commonEndpoint should be extended to support socket
+	// options where the implementation is not shared, as unix sockets need
+	// their own support for SO_TIMESTAMP.
+	if level == linux.SOL_SOCKET && name == linux.SO_TIMESTAMP {
+		if len(optVal) < sizeOfInt32 {
+			return syserr.ErrInvalidArgument
+		}
+		s.readMu.Lock()
+		defer s.readMu.Unlock()
+		s.sockOptTimestamp = usermem.ByteOrder.Uint32(optVal) != 0
+		return nil
+	}
+
 	return SetSockOpt(t, s, s.Endpoint, level, name, optVal)
 }
 
@@ -920,6 +995,14 @@ func setSockOptSocket(t *kernel.Task, s socket.Socket, ep commonEndpoint, name i
 		v := usermem.ByteOrder.Uint32(optVal)
 		return syserr.TranslateNetstackError(ep.SetSockOpt(tcpip.ReusePortOption(v)))
 
+	case linux.SO_BROADCAST:
+		if len(optVal) < sizeOfInt32 {
+			return syserr.ErrInvalidArgument
+		}
+
+		v := usermem.ByteOrder.Uint32(optVal)
+		return syserr.TranslateNetstackError(ep.SetSockOpt(tcpip.BroadcastOption(v)))
+
 	case linux.SO_PASSCRED:
 		if len(optVal) < sizeOfInt32 {
 			return syserr.ErrInvalidArgument
@@ -961,14 +1044,6 @@ func setSockOptSocket(t *kernel.Task, s socket.Socket, ep commonEndpoint, name i
 		}
 		s.SetRecvTimeout(v.ToNsecCapped())
 		return nil
-
-	case linux.SO_TIMESTAMP:
-		if len(optVal) < sizeOfInt32 {
-			return syserr.ErrInvalidArgument
-		}
-
-		v := usermem.ByteOrder.Uint32(optVal)
-		return syserr.TranslateNetstackError(ep.SetSockOpt(tcpip.TimestampOption(v)))
 
 	default:
 		socket.SetSockOptEmitUnimplementedEvent(t, name)
@@ -1122,7 +1197,9 @@ func setSockOptIP(t *kernel.Task, ep commonEndpoint, name int, optVal []byte) *s
 		}
 
 		return syserr.TranslateNetstackError(ep.SetSockOpt(tcpip.AddMembershipOption{
-			NIC:           tcpip.NICID(req.InterfaceIndex),
+			NIC: tcpip.NICID(req.InterfaceIndex),
+			// TODO: Change AddMembership to use the standard
+			// any address representation.
 			InterfaceAddr: tcpip.Address(req.InterfaceAddr[:]),
 			MulticastAddr: tcpip.Address(req.MulticastAddr[:]),
 		}))
@@ -1134,16 +1211,26 @@ func setSockOptIP(t *kernel.Task, ep commonEndpoint, name int, optVal []byte) *s
 		}
 
 		return syserr.TranslateNetstackError(ep.SetSockOpt(tcpip.RemoveMembershipOption{
-			NIC:           tcpip.NICID(req.InterfaceIndex),
+			NIC: tcpip.NICID(req.InterfaceIndex),
+			// TODO: Change DropMembership to use the standard
+			// any address representation.
 			InterfaceAddr: tcpip.Address(req.InterfaceAddr[:]),
 			MulticastAddr: tcpip.Address(req.MulticastAddr[:]),
 		}))
 
-	case linux.MCAST_JOIN_GROUP, linux.IP_MULTICAST_IF:
-		// FIXME: Disallow IP-level multicast group options by
-		// default. These will need to be supported by appropriately plumbing
-		// the level through to the network stack (if at all). However, we
-		// still allow setting TTL, and multicast-enable/disable type options.
+	case linux.IP_MULTICAST_IF:
+		req, err := copyInMulticastRequest(optVal)
+		if err != nil {
+			return err
+		}
+
+		return syserr.TranslateNetstackError(ep.SetSockOpt(tcpip.MulticastInterfaceOption{
+			NIC:           tcpip.NICID(req.InterfaceIndex),
+			InterfaceAddr: bytesToIPAddress(req.InterfaceAddr[:]),
+		}))
+
+	case linux.MCAST_JOIN_GROUP:
+		// FIXME: Implement MCAST_JOIN_GROUP.
 		t.Kernel().EmitUnimplementedEvent(t)
 		return syserr.ErrInvalidArgument
 
@@ -1413,6 +1500,8 @@ func (s *SocketOperations) GetPeerName(t *kernel.Task) (interface{}, uint32, *sy
 // coalescingRead is the fast path for non-blocking, non-peek, stream-based
 // case. It coalesces as many packets as possible before returning to the
 // caller.
+//
+// Precondition: s.readMu must be locked.
 func (s *SocketOperations) coalescingRead(ctx context.Context, dst usermem.IOSequence, discard bool) (int, *syserr.Error) {
 	var err *syserr.Error
 	var copied int
@@ -1433,6 +1522,10 @@ func (s *SocketOperations) coalescingRead(ctx context.Context, dst usermem.IOSeq
 			}
 		} else {
 			n, e = dst.CopyOut(ctx, s.readView)
+			// Set the control message, even if 0 bytes were read.
+			if e == nil {
+				s.updateTimestamp()
+			}
 		}
 		copied += n
 		s.readView.TrimFront(n)
@@ -1496,6 +1589,10 @@ func (s *SocketOperations) nonBlockingRead(ctx context.Context, dst usermem.IOSe
 	}
 
 	n, err := dst.CopyOut(ctx, s.readView)
+	// Set the control message, even if 0 bytes were read.
+	if err == nil {
+		s.updateTimestamp()
+	}
 	var addr interface{}
 	var addrLen uint32
 	if isPacket && senderRequested {
@@ -1505,11 +1602,11 @@ func (s *SocketOperations) nonBlockingRead(ctx context.Context, dst usermem.IOSe
 	if peek {
 		if l := len(s.readView); trunc && l > n {
 			// isPacket must be true.
-			return l, addr, addrLen, socket.ControlMessages{IP: s.readCM}, syserr.FromError(err)
+			return l, addr, addrLen, s.controlMessages(), syserr.FromError(err)
 		}
 
 		if isPacket || err != nil {
-			return int(n), addr, addrLen, socket.ControlMessages{IP: s.readCM}, syserr.FromError(err)
+			return int(n), addr, addrLen, s.controlMessages(), syserr.FromError(err)
 		}
 
 		// We need to peek beyond the first message.
@@ -1527,7 +1624,7 @@ func (s *SocketOperations) nonBlockingRead(ctx context.Context, dst usermem.IOSe
 			// We got some data, so no need to return an error.
 			err = nil
 		}
-		return int(n), nil, 0, socket.ControlMessages{IP: s.readCM}, syserr.FromError(err)
+		return int(n), nil, 0, s.controlMessages(), syserr.FromError(err)
 	}
 
 	var msgLen int
@@ -1540,10 +1637,26 @@ func (s *SocketOperations) nonBlockingRead(ctx context.Context, dst usermem.IOSe
 	}
 
 	if trunc {
-		return msgLen, addr, addrLen, socket.ControlMessages{IP: s.readCM}, syserr.FromError(err)
+		return msgLen, addr, addrLen, s.controlMessages(), syserr.FromError(err)
 	}
 
-	return int(n), addr, addrLen, socket.ControlMessages{IP: s.readCM}, syserr.FromError(err)
+	return int(n), addr, addrLen, s.controlMessages(), syserr.FromError(err)
+}
+
+func (s *SocketOperations) controlMessages() socket.ControlMessages {
+	return socket.ControlMessages{IP: tcpip.ControlMessages{HasTimestamp: s.readCM.HasTimestamp && s.sockOptTimestamp, Timestamp: s.readCM.Timestamp}}
+}
+
+// updateTimestamp sets the timestamp for SIOCGSTAMP. It should be called after
+// successfully writing packet data out to userspace.
+//
+// Precondition: s.readMu must be locked.
+func (s *SocketOperations) updateTimestamp() {
+	// Save the SIOCGSTAMP timestamp only if SO_TIMESTAMP is disabled.
+	if !s.sockOptTimestamp {
+		s.timestampValid = true
+		s.timestampNS = s.readCM.Timestamp
+	}
 }
 
 // RecvMsg implements the linux syscall recvmsg(2) for sockets backed by
@@ -1694,6 +1807,23 @@ func (s *SocketOperations) SendMsg(t *kernel.Task, src usermem.IOSequence, to []
 
 // Ioctl implements fs.FileOperations.Ioctl.
 func (s *SocketOperations) Ioctl(ctx context.Context, io usermem.IO, args arch.SyscallArguments) (uintptr, error) {
+	// SIOCGSTAMP is implemented by epsocket rather than all commonEndpoint
+	// sockets.
+	// TODO: Add a commonEndpoint method to support SIOCGSTAMP.
+	if int(args[1].Int()) == syscall.SIOCGSTAMP {
+		s.readMu.Lock()
+		defer s.readMu.Unlock()
+		if !s.timestampValid {
+			return 0, syserror.ENOENT
+		}
+
+		tv := linux.NsecToTimeval(s.timestampNS)
+		_, err := usermem.CopyObjectOut(ctx, io, args[2].Pointer(), &tv, usermem.IOOpts{
+			AddressSpaceActive: true,
+		})
+		return 0, err
+	}
+
 	return Ioctl(ctx, s.Endpoint, io, args)
 }
 

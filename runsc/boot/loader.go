@@ -51,7 +51,7 @@ import (
 	"gvisor.googlesource.com/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.googlesource.com/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.googlesource.com/gvisor/pkg/tcpip/stack"
-	"gvisor.googlesource.com/gvisor/pkg/tcpip/transport/ping"
+	"gvisor.googlesource.com/gvisor/pkg/tcpip/transport/icmp"
 	"gvisor.googlesource.com/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.googlesource.com/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.googlesource.com/gvisor/runsc/boot/filter"
@@ -477,9 +477,9 @@ func (l *Loader) run() error {
 			return err
 		}
 
-		// Create the root container init task.
-		_, _, err := l.k.CreateProcess(l.rootProcArgs)
-		if err != nil {
+		// Create the root container init task. It will begin running
+		// when the kernel is started.
+		if _, _, err := l.k.CreateProcess(l.rootProcArgs); err != nil {
 			return fmt.Errorf("creating init process: %v", err)
 		}
 
@@ -492,6 +492,11 @@ func (l *Loader) run() error {
 		ttyFile := l.rootProcArgs.FDMap.GetFile(0)
 		defer ttyFile.DecRef()
 		ep.tty = ttyFile.FileOperations.(*host.TTYFileOperations)
+
+		// Set the foreground process group on the TTY to the global
+		// init process group, since that is what we are about to
+		// start running.
+		ep.tty.InitForegroundProcessGroup(ep.tg.ProcessGroup())
 	}
 
 	// Start signal forwarding only after an init process is created.
@@ -595,10 +600,13 @@ func (l *Loader) startContainer(k *kernel.Kernel, spec *specs.Spec, conf *Config
 		return fmt.Errorf("setting executable path for %+v: %v", procArgs, err)
 	}
 
+	// Create and start the new process.
 	tg, _, err := l.k.CreateProcess(procArgs)
 	if err != nil {
 		return fmt.Errorf("creating process: %v", err)
 	}
+	l.k.StartProcess(tg)
+
 	// CreateProcess takes a reference on FDMap if successful.
 	procArgs.FDMap.DecRef()
 
@@ -758,7 +766,7 @@ func newEmptyNetworkStack(conf *Config, clock tcpip.Clock) (inet.Stack, error) {
 	case NetworkNone, NetworkSandbox:
 		// NetworkNone sets up loopback using netstack.
 		netProtos := []string{ipv4.ProtocolName, ipv6.ProtocolName, arp.ProtocolName}
-		protoNames := []string{tcp.ProtocolName, udp.ProtocolName, ping.ProtocolName4}
+		protoNames := []string{tcp.ProtocolName, udp.ProtocolName, icmp.ProtocolName4}
 		s := epsocket.Stack{stack.New(netProtos, protoNames, stack.Options{
 			Clock: clock,
 			Stats: epsocket.Metrics,

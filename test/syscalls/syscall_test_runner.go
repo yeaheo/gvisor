@@ -115,10 +115,34 @@ func runTestCaseRunsc(testBin string, tc gtest.TestCase, t *testing.T) {
 	spec.Mounts = nil
 	if *useTmpfs {
 		// Forces '/tmp' to be mounted as tmpfs, otherwise test that rely on
-		// features available in gVisor's tmpfs and not gofers, may fail.
-		spec.Mounts = []specs.Mount{
-			{Destination: "/tmp", Type: "tmpfs"},
+		// features only available in gVisor's internal tmpfs may fail.
+		spec.Mounts = append(spec.Mounts, specs.Mount{
+			Destination: "/tmp",
+			Type:        "tmpfs",
+		})
+	} else {
+		// Use a gofer-backed directory as '/tmp'.
+		//
+		// Tests might be running in parallel, so make sure each has a
+		// unique test temp dir.
+		//
+		// Some tests (e.g., sticky) access this mount from other
+		// users, so make sure it is world-accessible.
+		tmpDir, err := ioutil.TempDir(testutil.TmpDir(), "")
+		if err != nil {
+			t.Fatalf("could not create temp dir: %v", err)
 		}
+		defer os.RemoveAll(tmpDir)
+
+		if err := os.Chmod(tmpDir, 0777); err != nil {
+			t.Fatalf("could not chmod temp dir: %v", err)
+		}
+
+		spec.Mounts = append(spec.Mounts, specs.Mount{
+			Type:        "bind",
+			Destination: "/tmp",
+			Source:      tmpDir,
+		})
 	}
 
 	// Set environment variable that indicates we are
@@ -178,6 +202,11 @@ func runTestCaseRunsc(testBin string, tc gtest.TestCase, t *testing.T) {
 		debugLogDir += "/"
 		log.Infof("runsc logs: %s", debugLogDir)
 		args = append(args, "-debug-log", debugLogDir)
+
+		// Default -log sends messages to stderr which makes reading the test log
+		// difficult. Instead, drop them when debug log is enabled given it's a
+		// better place for these messages.
+		args = append(args, "-log=/dev/null")
 	}
 
 	// Current process doesn't have CAP_SYS_ADMIN, create user namespace and run

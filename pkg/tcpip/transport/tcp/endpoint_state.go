@@ -204,6 +204,9 @@ func (e *endpoint) afterLoad() {
 				e.connectingAddress = e.id.RemoteAddress
 			}
 		}
+		// Reset the scoreboard to reinitialize the sack information as
+		// we do not restore SACK information.
+		e.scoreboard.Reset()
 		if err := e.connect(tcpip.FullAddress{NIC: e.boundNICID, Addr: e.connectingAddress, Port: e.id.RemotePort}, false, e.workerRunning); err != tcpip.ErrConnectStarted {
 			panic("endpoint connecting failed: " + err.String())
 		}
@@ -336,6 +339,7 @@ func loadError(s string) *tcpip.Error {
 			tcpip.ErrNetworkUnreachable,
 			tcpip.ErrMessageTooLong,
 			tcpip.ErrNoBufferSpace,
+			tcpip.ErrBroadcastDisabled,
 		}
 
 		messageToError = make(map[string]*tcpip.Error)

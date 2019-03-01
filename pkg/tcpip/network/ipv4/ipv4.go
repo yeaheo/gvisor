@@ -38,9 +38,9 @@ const (
 	// ProtocolNumber is the ipv4 protocol number.
 	ProtocolNumber = header.IPv4ProtocolNumber
 
-	// maxTotalSize is maximum size that can be encoded in the 16-bit
+	// MaxTotalSize is maximum size that can be encoded in the 16-bit
 	// TotalLength field of the ipv4 header.
-	maxTotalSize = 0xffff
+	MaxTotalSize = 0xffff
 
 	// buckets is the number of identifier buckets.
 	buckets = 2048
@@ -131,7 +131,8 @@ func (e *endpoint) WritePacket(r *stack.Route, hdr buffer.Prependable, payload b
 // HandlePacket is called by the link layer when new ipv4 packets arrive for
 // this endpoint.
 func (e *endpoint) HandlePacket(r *stack.Route, vv buffer.VectorisedView) {
-	h := header.IPv4(vv.First())
+	headerView := vv.First()
+	h := header.IPv4(headerView)
 	if !h.IsValid(vv.Size()) {
 		return
 	}
@@ -153,11 +154,12 @@ func (e *endpoint) HandlePacket(r *stack.Route, vv buffer.VectorisedView) {
 	}
 	p := h.TransportProtocol()
 	if p == header.ICMPv4ProtocolNumber {
-		e.handleICMP(r, vv)
+		headerView.CapLength(hlen)
+		e.handleICMP(r, headerView, vv)
 		return
 	}
 	r.Stats().IP.PacketsDelivered.Increment()
-	e.dispatcher.DeliverTransportPacket(r, p, vv)
+	e.dispatcher.DeliverTransportPacket(r, p, headerView, vv)
 }
 
 // Close cleans up resources associated with the endpoint.
@@ -204,8 +206,8 @@ func (p *protocol) Option(option interface{}) *tcpip.Error {
 // calculateMTU calculates the network-layer payload MTU based on the link-layer
 // payload mtu.
 func calculateMTU(mtu uint32) uint32 {
-	if mtu > maxTotalSize {
-		mtu = maxTotalSize
+	if mtu > MaxTotalSize {
+		mtu = MaxTotalSize
 	}
 	return mtu - header.IPv4MinimumSize
 }

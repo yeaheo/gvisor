@@ -399,6 +399,24 @@ func (n *NIC) DeliverNetworkPacket(linkEP LinkEndpoint, remote, _ tcpip.LinkAddr
 
 	src, dst := netProto.ParseAddresses(vv.First())
 
+	// If the packet is destined to the IPv4 Broadcast address, then make a
+	// route to each IPv4 network endpoint and let each endpoint handle the
+	// packet.
+	if dst == header.IPv4Broadcast {
+		// n.endpoints is mutex protected so acquire lock.
+		n.mu.RLock()
+		for _, ref := range n.endpoints {
+			if ref.protocol == header.IPv4ProtocolNumber && ref.tryIncRef() {
+				r := makeRoute(protocol, dst, src, linkEP.LinkAddress(), ref)
+				r.RemoteLinkAddress = remote
+				ref.ep.HandlePacket(&r, vv)
+				ref.decRef()
+			}
+		}
+		n.mu.RUnlock()
+		return
+	}
+
 	if ref := n.getRef(protocol, dst); ref != nil {
 		r := makeRoute(protocol, dst, src, linkEP.LinkAddress(), ref)
 		r.RemoteLinkAddress = remote
@@ -487,7 +505,7 @@ func (n *NIC) getRef(protocol tcpip.NetworkProtocolNumber, dst tcpip.Address) *r
 
 // DeliverTransportPacket delivers the packets to the appropriate transport
 // protocol endpoint.
-func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolNumber, vv buffer.VectorisedView) {
+func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolNumber, netHeader buffer.View, vv buffer.VectorisedView) {
 	state, ok := n.stack.transportProtocols[protocol]
 	if !ok {
 		n.stack.stats.UnknownProtocolRcvdPackets.Increment()
@@ -507,16 +525,16 @@ func (n *NIC) DeliverTransportPacket(r *Route, protocol tcpip.TransportProtocolN
 	}
 
 	id := TransportEndpointID{dstPort, r.LocalAddress, srcPort, r.RemoteAddress}
-	if n.demux.deliverPacket(r, protocol, vv, id) {
+	if n.demux.deliverPacket(r, protocol, netHeader, vv, id) {
 		return
 	}
-	if n.stack.demux.deliverPacket(r, protocol, vv, id) {
+	if n.stack.demux.deliverPacket(r, protocol, netHeader, vv, id) {
 		return
 	}
 
 	// Try to deliver to per-stack default handler.
 	if state.defaultHandler != nil {
-		if state.defaultHandler(r, id, vv) {
+		if state.defaultHandler(r, id, netHeader, vv) {
 			return
 		}
 	}

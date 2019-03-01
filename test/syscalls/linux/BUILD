@@ -148,6 +148,7 @@ cc_library(
     hdrs = ["ip_socket_test_util.h"],
     deps = [
         ":socket_test_util",
+        "@com_google_absl//absl/strings",
     ],
 )
 
@@ -732,7 +733,9 @@ cc_binary(
     srcs = ["fork.cc"],
     linkstatic = 1,
     deps = [
+        "//test/util:capability_util",
         "//test/util:logging",
+        "//test/util:memory_util",
         "//test/util:test_main",
         "//test/util:test_util",
         "//test/util:thread_util",
@@ -1445,6 +1448,25 @@ cc_binary(
 )
 
 cc_binary(
+    name = "proc_pid_uid_gid_map_test",
+    testonly = 1,
+    srcs = ["proc_pid_uid_gid_map.cc"],
+    linkstatic = 1,
+    deps = [
+        "//test/util:capability_util",
+        "//test/util:fs_util",
+        "//test/util:logging",
+        "//test/util:multiprocess_util",
+        "//test/util:posix_error",
+        "//test/util:save_util",
+        "//test/util:test_main",
+        "//test/util:test_util",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+cc_binary(
     name = "pselect_test",
     testonly = 1,
     srcs = ["pselect.cc"],
@@ -1503,6 +1525,22 @@ cc_binary(
         "//test/util:test_main",
         "//test/util:test_util",
         "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+cc_binary(
+    name = "raw_socket_ipv4_test",
+    testonly = 1,
+    srcs = ["raw_socket_ipv4.cc"],
+    linkstatic = 1,
+    deps = [
+        ":socket_test_util",
+        "//test/util:capability_util",
+        "//test/util:file_descriptor",
+        "//test/util:test_main",
+        "//test/util:test_util",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -1949,6 +1987,42 @@ cc_library(
     alwayslink = 1,
 )
 
+cc_library(
+    name = "socket_ipv4_udp_unbound_external_networking_test_cases",
+    testonly = 1,
+    srcs = [
+        "socket_ipv4_udp_unbound_external_networking.cc",
+    ],
+    hdrs = [
+        "socket_ipv4_udp_unbound_external_networking.h",
+    ],
+    deps = [
+        ":ip_socket_test_util",
+        ":socket_test_util",
+        "//test/util:test_util",
+        "@com_google_googletest//:gtest",
+    ],
+    alwayslink = 1,
+)
+
+cc_library(
+    name = "socket_ipv4_tcp_unbound_external_networking_test_cases",
+    testonly = 1,
+    srcs = [
+        "socket_ipv4_tcp_unbound_external_networking.cc",
+    ],
+    hdrs = [
+        "socket_ipv4_tcp_unbound_external_networking.h",
+    ],
+    deps = [
+        ":ip_socket_test_util",
+        ":socket_test_util",
+        "//test/util:test_util",
+        "@com_google_googletest//:gtest",
+    ],
+    alwayslink = 1,
+)
+
 cc_binary(
     name = "socket_abstract_test",
     testonly = 1,
@@ -2120,6 +2194,38 @@ cc_binary(
         ":socket_generic_test_cases",
         ":socket_ip_udp_test_cases",
         ":socket_non_stream_test_cases",
+        ":socket_test_util",
+        "//test/util:test_main",
+        "//test/util:test_util",
+    ],
+)
+
+cc_binary(
+    name = "socket_ipv4_udp_unbound_external_networking_test",
+    testonly = 1,
+    srcs = [
+        "socket_ipv4_udp_unbound_external_networking_test.cc",
+    ],
+    linkstatic = 1,
+    deps = [
+        ":ip_socket_test_util",
+        ":socket_ipv4_udp_unbound_external_networking_test_cases",
+        ":socket_test_util",
+        "//test/util:test_main",
+        "//test/util:test_util",
+    ],
+)
+
+cc_binary(
+    name = "socket_ipv4_tcp_unbound_external_networking_test",
+    testonly = 1,
+    srcs = [
+        "socket_ipv4_tcp_unbound_external_networking_test.cc",
+    ],
+    linkstatic = 1,
+    deps = [
+        ":ip_socket_test_util",
+        ":socket_ipv4_tcp_unbound_external_networking_test_cases",
         ":socket_test_util",
         "//test/util:test_main",
         "//test/util:test_util",
@@ -2886,6 +2992,7 @@ cc_binary(
     linkstatic = 1,
     deps = [
         ":socket_test_util",
+        ":unix_domain_socket_test_util",
         "//test/util:test_main",
         "//test/util:test_util",
         "//test/util:thread_util",
